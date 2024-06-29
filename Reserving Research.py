@@ -5,7 +5,6 @@ import numpy as np
 # Reading in the data
 dat = pd.read_csv("Transaction Data.csv")
 
-# Data set variables
 # Finding the start origin year 
 start_year = int(min(dat["OriginDate"].str.slice(start = -4)))
 print("Start year is: ", start_year)
@@ -36,7 +35,7 @@ print(initial)
 # Finding the link ratios
 print(initial.link_ratio)
 
-# The valuation date
+# Check: the valuation date
 print(initial.valuation_date)
 
 # ---------------------------------------------------------------------------------------------------------------------------------
@@ -45,7 +44,6 @@ print(initial.valuation_date)
 val_year = 2018
 
 # Subsetting the claims data to claims that occurred before the valuation date
-print(dat)
 val_dat = dat[dat["TransactionYear"] < (val_year + 1)]
 
 val_triangle = cl.Triangle(
@@ -75,6 +73,8 @@ print(val_triangle_model.full_triangle_)
 predicted_ultimate = val_triangle_model.ultimate_
 predicted_ultimate = predicted_ultimate.to_frame()
 print(predicted_ultimate)
+
+# Attempts to access the other predicted (non-ultimate values)
 #print(val_triangle_model.to_frame()) - AttributeError: 'Chainladder' object has no attribute 'to_frame'
 #print("The type is: ", type(val_triangle_model)) - <class 'chainladder.methods.chainladder.Chainladder'>
 
@@ -83,7 +83,7 @@ initial_triangle_dat = initial.to_frame()
 observed_ultimate = initial_triangle_dat.iloc[0:(val_year - start_year + 1), (val_year - start_year)] 
 print("These are the observed ultimates:","\n", observed_ultimate)
 
-# Comparing the predicted ultimate values with the observed ultimate values for each origin year where ultimate is @ valuation date
+# Combining the predicted and observed ultimate values into a single dataframe
 predicted_ultimate = predicted_ultimate.rename(columns={'2261': 'Predicted'})
 predicted_ultimate["Observed"] = observed_ultimate
 ultimate = predicted_ultimate
