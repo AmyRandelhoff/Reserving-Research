@@ -1,0 +1,289 @@
+import pandas as pd
+import chainladder as cl
+import numpy as np
+# Just to suppress warnings that the one of the date functions in the chainladder package is going to be out of date
+import warnings
+from datetime import datetime
+import os
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Measuring the time the program takes to run
+import time
+start_time = time.time()
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Formatting the output so that it does not display scientific notation
+pd.options.display.float_format = '{:.2f}'.format 
+np.set_printoptions(suppress=True)
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Setting up the environment
+
+# Suppresses the warnings
+warnings.filterwarnings("ignore")
+
+# Reading in the data
+dat = pd.read_csv("Transactions_Data.csv")
+print(dat)
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Formatting the data
+
+# Finding the start origin year 
+start_year = int(min(dat["origin_date"].str.slice(start = -4)))
+#print("Start year is: ", start_year)
+
+# Finding the accident year for each claim
+dat["AccidentYear"] = dat["origin_date"].str.slice(start = -4)
+dat['AccidentYear'] = dat['AccidentYear'].astype(int)
+
+# Finding the year of transaction for each transaction
+dat["TransactionYear"] = dat["transaction_date"].str.slice(start = -4)
+dat['TransactionYear'] = dat['TransactionYear'].astype(int)
+
+# Finding the month of the accident for each claim
+dat["AccidentMonth"] = dat["origin_date"].str.slice(start = -7, stop = -5)
+dat['AccidentMonth'] = dat['AccidentMonth'].astype(int)
+
+# Finding the month of transaction for each transaction
+dat["TransactionMonth"] = dat["transaction_date"].str.slice(start = -7, stop = -5)
+dat['TransactionMonth'] = dat['TransactionMonth'].astype(int)
+
+# Finding the Class for each claim
+dat["Class"] = dat["class"].str[0:6]
+
+# Finding the Region for each claim
+dat["Region"] = dat["class"].str[7:14]
+
+#  Fiding the Type for each claim
+dat["Type"] = dat["class"].str[15:20]
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Obtaining the other features that are going to be used in the new model
+
+# Converting dates to a date_time format
+dat["report_date"] = pd.to_datetime(dat["report_date"], format='%d/%m/%Y')
+dat["close_date"] = pd.to_datetime(dat["close_date"], format='%d/%m/%Y')
+dat["transaction_date"] = pd.to_datetime(dat["transaction_date"], format='%d/%m/%Y')
+dat["origin_date"] = pd.to_datetime(dat["origin_date"], format='%d/%m/%Y')
+
+# Reporting delay
+dat["AccToReportDays"] = (dat["report_date"] - dat["origin_date"]).dt.days
+
+# Settlement delay
+dat["CloseToReportDays"] = (dat["close_date"] - dat["report_date"]).dt.days
+
+# Case estimates
+indices = dat.reset_index().groupby(["claim_no"])["index"].min().to_list()
+indices = sorted(indices)
+unique_claim_dat = dat.iloc[indices,]
+unique_claim_dat["CaseEstimates"] = unique_claim_dat["incurred_inc"]
+#print("This is the data set with unique claim ids:","\n", case_dat)
+
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# CATEGORICAL VARIABLES 
+# One-hot encoding of the categorical variables
+dummies_class = pd.get_dummies(unique_claim_dat.Class, dtype = int)
+dummies_region = pd.get_dummies(unique_claim_dat.Region, dtype = int)
+dummies_type = pd.get_dummies(unique_claim_dat.Type, dtype = int)
+unique_claim_dat = pd.concat([unique_claim_dat,dummies_class, dummies_region, dummies_type],axis=1)
+print(unique_claim_dat)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Setting the valuation date 
+val_year = 2014
+val_month = 12
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# APPLYING THE NEW MODEL
+# Subsetting the feature dataset to the valuation date
+
+#val_unique_claim_dat = unique_claim_dat[(unique_claim_dat["TransactionYear"] < (val_year)) | ((unique_claim_dat["TransactionYear"] == (val_year)) & (unique_claim_dat["TransactionMonth"] < (val_month + 1)))]
+
+# Function to determine the Euclidean distance for numeric features
+#def euclidean_distance(data, column): 
+    # Finding what column a feature is
+#    col_number = data.columns.get_loc(column)
+
+    #Setting up an empty matrix to store the output of the for loops
+#    euclidean_dist = [[0 for _ in range(len(data))] for _ in range(len(data))]
+
+    # Determining the Euclidean distance between each claim for the numerical feature
+#    for claim1 in range(len(data)): 
+#        print(claim1)
+#        for claim2 in range(len(data)): 
+#            euclidean_dist[claim1][claim2] = float((data.iloc[claim1,col_number] - data.iloc[claim2,col_number])**2)**(1/2)
+        
+#    euclidean_dat = pd.DataFrame(euclidean_dist)
+
+#    return(euclidean_dat)
+
+#AccToReportDist = euclidean_distance(val_unique_claim_dat, "AccToReportDays")
+#CloseToReportDist = euclidean_distance(val_unique_claim_dat, "CloseToReportDays")
+#CaseEstimateDist = euclidean_distance(val_unique_claim_dat, "CaseEstimates")
+#Class1Dist = euclidean_distance(val_unique_claim_dat, "Class1")
+#Class2Dist = euclidean_distance(val_unique_claim_dat, "Class2")
+#Class3Dist = euclidean_distance(val_unique_claim_dat, "Class3")
+#Region1Dist = euclidean_distance(val_unique_claim_dat, "Region1")
+#Region1Dist = euclidean_distance(val_unique_claim_dat, "Region1")
+#Region2Dist = euclidean_distance(val_unique_claim_dat, "Region2")
+#Region3Dist = euclidean_distance(val_unique_claim_dat, "Region3")
+
+# Determine the Euclidean distance for the months
+#Setting up an empty matrix to store the output of the for loops
+#numeric_months = [[0 for _ in range(len(val_unique_claim_dat))] for _ in range(len(val_unique_claim_dat))]
+
+# Finding the column number for the months
+#col_number_months = val_unique_claim_dat.columns.get_loc("TransactionMonth")
+
+# Determining the Euclidean distance between each claim for the numerical feature
+#for claim1 in range(len(val_unique_claim_dat)): 
+#    print(claim1)
+#    for claim2 in range(len(val_unique_claim_dat)): 
+#        numeric_months[claim1][claim2] = min(abs(unique_claim_dat.iloc[claim1,col_number_months]-unique_claim_dat.iloc[claim2,col_number_months]),12-abs(unique_claim_dat.iloc[claim1,col_number_months]-unique_claim_dat.iloc[claim2,col_number_months]))
+        
+#monthsDist = pd.DataFrame(numeric_months)
+#print(monthsDist)
+
+# CREATING THE CLAIM MATRICES
+# SYNTAX : ((number of sets, number of rows, numnber of columns))
+#feature_datasets = [AccToReportDist, CloseToReportDist, CaseEstimateDist, Class1Dist]
+#claim_list = np.zeros((len(val_unique_claim_dat), len(val_unique_claim_dat), len(feature_datasets)))
+
+# Populate the claim data frames
+#for claim in range(len(val_unique_claim_dat)):
+#    for feature in range(len(feature_datasets)):
+#        claim_list[claim][:,feature] = feature_datasets[feature].iloc[range(len(val_unique_claim_dat)),claim]
+
+#print(claim_list)
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# APPLYING THE NEW MODEL - TAKE 2
+# Subsetting the feature dataset to the valuation date
+val_unique_claim_dat = unique_claim_dat[(unique_claim_dat["TransactionYear"] < (val_year)) | ((unique_claim_dat["TransactionYear"] == (val_year)) & (unique_claim_dat["TransactionMonth"] < (val_month + 1)))]
+
+# Subsetting the unique claims data at valuation to the features using euclidean distance
+cols = ["AccToReportDays", "CloseToReportDays", "CaseEstimates", "Class1", "Class2", "Class3", "Region1", "Region1", "Region2", "Region3"]
+feature_dat = val_unique_claim_dat[cols]
+
+# THIS SHOULD NOT BE HARD CODED - FIX FIX FIX 
+num_features = len(feature_dat.columns)
+
+# Determine the Euclidean distance for all features except month
+# Setting up an empty matrix to store the output of the for loops
+claim_list = np.zeros((len(val_unique_claim_dat), len(val_unique_claim_dat), num_features))
+
+# Determining the Euclidean distance between each claim for the numerical feature
+for claim1 in range(len(val_unique_claim_dat)): 
+    #print(claim1)
+    for claim2 in range(len(val_unique_claim_dat)): 
+        claim_list[claim1][claim2, : ] = (feature_dat.iloc[claim1, range(len(feature_dat.columns))] - feature_dat.iloc[claim2, range(len(feature_dat.columns))])**2
+
+print(claim_list)
+
+# Determine the Euclidean distance for the months
+#Setting up an empty matrix to store the output of the for loops
+months_dist = np.zeros((len(val_unique_claim_dat), len(val_unique_claim_dat), 1))
+
+# Finding the column number for the months
+col_number_months = val_unique_claim_dat.columns.get_loc("TransactionMonth")
+
+# Determining the distance measure for the month of transaction
+for claim1 in range(len(val_unique_claim_dat)): 
+    #print(claim1)
+    for claim2 in range(len(val_unique_claim_dat)): 
+        months_dist[claim1] = min(abs(val_unique_claim_dat.iloc[claim1, col_number_months] - val_unique_claim_dat.iloc[claim2, col_number_months]), 12 - abs(val_unique_claim_dat.iloc[claim1, col_number_months] - val_unique_claim_dat.iloc[claim2, col_number_months]))
+
+print(months_dist)
+
+claim_list = np.dstack([claim_list, months_dist])
+
+# Function for the weighted Euclidean distance
+def weightedSum(claim):
+    weights = np.array([1,1,1,1,1,1,1,1,1,1,1])
+    dist = (sum(claim * weights))**(1/2)
+    return(dist)
+
+# Creating a numpy array to store the euclidean distance in 
+euclidean_dist = np.zeros((len(val_unique_claim_dat), 1, len(val_unique_claim_dat)))
+
+# Finding the Euclidean distance with all features
+for claim1 in range(len(val_unique_claim_dat)):
+    euclidean_dist[claim1] = np.apply_along_axis(weightedSum, axis = 1, arr = claim_list[claim1])
+
+print(euclidean_dist)
+
+#----------------------------------------------------------------------------------------------------------------------------
+# Applying the basic chain ladder 
+
+# Subsetting the claims data to claims that occurred before the valuation date
+val_dat = dat[(dat["TransactionYear"] < (val_year)) | ((dat["TransactionYear"] == (val_year)) & (dat["TransactionMonth"] < (val_month + 1)))]
+#print("this is the valuation dataframe rolled back:", "\n", val_dat)
+
+val_triangle = cl.Triangle(
+    val_dat,
+    origin = ["AccidentYear", "AccidentMonth"],
+    origin_format = "%d-%m-%Y",    
+    development = ["TransactionYear", "TransactionMonth"],
+    development_format = "%d-%m-%Y",
+    columns = "incurred_inc",
+    cumulative = False
+)
+
+# Changes the triangle from incremental to cumulative 
+val_triangle = val_triangle.incr_to_cum()
+
+# The cumulative incurred claims triangle as at valuation date
+#print("The cumulative incurred traingle as at the valuation date:","\n", val_triangle)
+
+# Check: the valuation date of the triangle
+#print("Check: the valuation date of the model is:","\n", val_triangle.valuation_date)
+
+# The full triangle after applying the chain ladder
+val_triangle_model = cl.Chainladder().fit(val_triangle)
+full_triangle_df = val_triangle_model.full_triangle_.to_frame()
+#print("The valuataion triangle after the chain ladder has been applied:","\n", full_triangle_df)
+#print(full_triangle_df.iloc[1,1])
+
+# The predicted ultimate values for each origin year 
+predicted_ultimate = val_triangle_model.ultimate_
+predicted_ultimate = predicted_ultimate.to_frame()
+predicted_ultimate = predicted_ultimate.rename(columns={'2261-12': 'Predicted'})
+#print("These are the predicted ultimate values:","\n", predicted_ultimate)
+
+# Finding the observed ultimate corresponding to the same period as the predicted ultimate
+# Converting the data to triangle format - all the data is used
+initial = cl.Triangle(
+    dat, 
+    origin = ["AccidentYear", "AccidentMonth"],
+    origin_format = "%d-%m-%Y",    
+    development = ["TransactionYear", "TransactionMonth"],
+    development_format = "%d-%m-%Y",
+    columns = "incurred_inc",
+    cumulative = False
+)
+
+# Converting the triangle from incremental to cumulative
+initial = initial.incr_to_cum()
+#print("This is the full period, cumulative traingle: ", initial)
+
+# Finding the link ratios
+#print(initial.link_ratio)
+
+# Check: the valuation date
+#print("This is the valuation date for the full period:", initial.valuation_date)
+
+initial_triangle_dat = initial.to_frame()
+observed_ultimate = initial_triangle_dat.iloc[0:((val_year - start_year + 1)*12), (val_year - start_year)*12] 
+
+# Combining the predicted and observed ultimate values into a single dataframe
+predicted_ultimate["Observed"] = observed_ultimate
+ultimate = predicted_ultimate
+#print("Data frame of the predicted and observed ultimate:","\n", ultimate)
+
+# Ratio of predicted ultimate to observed ultimate 
+print("Predicted:Observed ultimate:","\n", (ultimate["Predicted"]/ultimate["Observed"]))
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Measuring the time the program has taken
+print("--- %s seconds ---" % (time.time() - start_time))
