@@ -1,0 +1,470 @@
+import pandas as pd
+import chainladder as cl
+import numpy as np
+# Just to suppress warnings that the one of the date functions in the chainladder package is going to be out of date
+import warnings
+import datetime as date
+import os
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Measuring the time the program takes to run
+import time
+start_time = time.time()
+
+# Setting up the environment
+# Suppresses the warnings
+warnings.filterwarnings("ignore")
+
+# Formatting the output so that it does not display scientific notation
+pd.options.display.float_format = '{:.2f}'.format 
+np.set_printoptions(suppress=True)
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Formatting the data
+def FormatTheData(dat):
+
+    # Converting dates to a date_time format
+    dat["report_date"] = pd.to_datetime(dat["report_date"], format='%d/%m/%Y')
+    dat["close_date"] = pd.to_datetime(dat["close_date"], format='%d/%m/%Y')
+    dat["transaction_date"] = pd.to_datetime(dat["transaction_date"], format='%d/%m/%Y')
+    dat["origin_date"] = pd.to_datetime(dat["origin_date"], format='%d/%m/%Y')
+
+    # Obtaining month and year for dates
+    dat["OriginYear"] = dat["origin_date"].dt.year
+    dat["TransactionYear"] = dat["transaction_date"].dt.year
+    dat["CloseYear"] = dat["close_date"].dt.year
+    dat["OriginMonth"] = dat["origin_date"].dt.month
+    dat["TransactionMonth"] = dat["transaction_date"].dt.month
+    dat["CloseMonth"] = dat["close_date"].dt.month
+
+    # Finding the Class for each claim
+    dat["Class"] = dat["class"].str[5:6]
+
+    # Finding the Region for each claim
+    dat["Region"] = dat["class"].str[13:14]
+
+    #  Fiding the Type for each claim
+    dat["Type"] = dat["class"].str[19:20]
+
+    # Making the claim numbers unique
+    dat["claim_no"] = dat["claim_no"].astype(str)+ dat["Class"].astype(str) +  dat["Region"].astype(str) + dat["Type"].astype(str)
+
+    return(dat)
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Subsetting a dataset to the valuation date
+def SubsetToValuationDate(dat):
+    valuation_dat = dat[dat["transaction_date"] <= val_date]
+    return(valuation_dat)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Finding how long a claim has been open in months at the valuation date
+# Note that the month the claim was reported in is included, and so is the month of the valuation date
+# i.e., it will always be correct or too long
+def GetTimeClaimHasBeenOpen(val_dat):
+
+    # Finding the final close date for reopened claims, as at the valuation date. If the claim is only reopened after the valuation date, then the final claim at the valuation date is the close date before the claim has been reopened. 
+    # If the claim is not re-opened within the valuation date or at all, the close date stays as it is. 
+    max_close_date = pd.DataFrame(val_dat.claim_no.unique())
+    close_date = val_dat.groupby("claim_no", sort = False)["close_date"].max().to_list()
+    max_close_date["max_close_date"] = close_date
+    max_close_date.columns = ["claim_no", "max_close_date"]
+
+    max_close_date["MaxCloseYear"] = max_close_date["max_close_date"].dt.year
+    max_close_date["MaxCloseMonth"] = max_close_date["max_close_date"].dt.month
+
+    # We are making the simplification that a claim that was opened and closed in the same month was open for 1 month
+    origin_to_max_close_months = (max_close_date["MaxCloseYear"] - val_dat["OriginYear"]) * 12 + max_close_date["MaxCloseMonth"] - val_dat["OriginMonth"] + 1
+
+    # 1 added inside pandas series to so that it is added to every member of the series 
+    origin_to_valdate_months = (pd.Series(val_year, index = val_dat["OriginYear"].index) - val_dat["OriginYear"]) * 12 + (pd.Series(val_month + 1, index = val_dat["OriginYear"].index) - val_dat["OriginMonth"])
+    
+    temp = pd.DataFrame({"origin_to_valdate": origin_to_valdate_months, "origin_to_max_close_date": origin_to_max_close_months})
+    val_dat['TimeOpen'] = temp.min(axis = "columns")
+
+    return(val_dat)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Finding the open claims at the valuation date
+def GetListOfOpenClaimsAtValuationDate(valuation_dat):
+
+    # data frame of all transactions of all open claims at the valuation date
+    open_claims_transactions_dat = valuation_dat[valuation_dat["close_date"] > val_date]
+
+    # open_claims is numpy.ndarray
+    # list of all the open claim numbers at the valuation date
+    open_claims = open_claims_transactions_dat.claim_no.unique()
+
+    # dataframe containing each open claim number once - i.e., only the first transaction for each claim is included 
+    open_claims_transactions_dat["index"]= pd.RangeIndex(len(open_claims_transactions_dat.index))
+    indices = open_claims_transactions_dat.groupby("claim_no")["index"].min().to_list()
+    indices = sorted(indices)
+    unique_open_claim_dat = open_claims_transactions_dat.iloc[indices,]
+
+    return(open_claims, open_claims_transactions_dat, unique_open_claim_dat)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Find older claims and claims which have been open longer than the current open claim
+# current_open_claim should be a particular line of the valuation dataframe
+def GetOlderandLongerTailClaims(current_open_claim, val_dat):
+    older_and_longer_claims_than_curent_claim = val_dat[(val_dat["TimeOpen"] > current_open_claim["TimeOpen"])]
+    return(older_and_longer_claims_than_curent_claim)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Get the number of months between the transaction date and the origin date for each of the older and longer tail claims - THIS IS THE DEVELOPMENT PERIOD OF THE TRANSACTION
+# current_open_claim should be a particular line of the valuation dataframe
+def GetDevelopmentPeriodForOlderAndLongerTailClaimTransactions(older_and_longer_claims):
+    older_and_longer_claims["DevPeriodForTransaction"] = (older_and_longer_claims["TransactionYear"] - older_and_longer_claims["OriginYear"]) * 12 + older_and_longer_claims["TransactionMonth"] - older_and_longer_claims["OriginMonth"] + 1
+    return(older_and_longer_claims)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Create the cumulative individual claims triangle for all the older and longer tailed claims than the current open claim
+def GetCumulativeIndividualClaimsRectangle(older_and_longer_tailed_claims):
+
+    development_period_col_num = older_and_longer_tailed_claims.columns.get_loc("DevPeriodForTransaction")
+    # RATIONALE - the longest development period from a previous claim is the longest we would be able to use the previous claims to project the open claim
+    max_months_for_dev_period_array = max(older_and_longer_tailed_claims["DevPeriodForTransaction"])
+    incurred_inc_col_num = older_and_longer_tailed_claims.columns.get_loc("incurred_inc")
+    claim_no_col_num = older_and_longer_tailed_claims.columns.get_loc("claim_no")
+    unique_claim_numbers =  older_and_longer_tailed_claims.claim_no.unique()
+
+    # Setting up the empty matrix to store the individual claims triangle in 
+    individual_claims_triangle = np.zeros((len(unique_claim_numbers), max_months_for_dev_period_array)) 
+
+    # Setting up the array to store the development period index of the latest transaction for each claim
+    latest_development_period_index_for_each_past_claim = np.zeros((len(unique_claim_numbers), 1))
+
+    triangle_indexer = 0
+    previous_claim_number = older_and_longer_tailed_claims.iloc[0, claim_no_col_num]
+    list_of_seen_claims = []
+
+    print("This is the start of the print statements")
+    print("This the number of transactions of older and longer tail claims: ", len(older_and_longer_tailed_claims))
+    print("This is the number of unique claim numbers: ", len(unique_claim_numbers))
+    print("This is the length of the longest development period:", max_months_for_dev_period_array)
+
+    for transaction in range(len(older_and_longer_tailed_claims)):
+        current_old_claim_number = older_and_longer_tailed_claims.iloc[transaction, claim_no_col_num]
+
+        development_period = older_and_longer_tailed_claims.iloc[transaction, development_period_col_num]
+        # Python indexes from 0
+        development_period_index = development_period - 1
+
+        if current_old_claim_number  == previous_claim_number:
+            individual_claims_triangle[triangle_indexer, development_period_index:] = individual_claims_triangle[triangle_indexer, development_period_index:] + np.full((max_months_for_dev_period_array - development_period_index), older_and_longer_tailed_claims.iloc[transaction,incurred_inc_col_num])
+            latest_development_period_index_for_each_past_claim[triangle_indexer] = development_period_index
+
+        elif current_old_claim_number in list_of_seen_claims:
+            temp_index = list_of_seen_claims.index(current_old_claim_number)
+            print("This is the index:", temp_index)
+            print("This is the claim number:", current_old_claim_number)
+            individual_claims_triangle[temp_index, development_period_index:] = individual_claims_triangle[temp_index, development_period_index:] + np.full((max_months_for_dev_period_array - development_period_index), older_and_longer_tailed_claims.iloc[transaction,incurred_inc_col_num])
+            latest_development_period_index_for_each_past_claim[temp_index] = development_period_index
+
+        else:
+            triangle_indexer = triangle_indexer + 1
+            individual_claims_triangle[triangle_indexer, development_period_index:] = individual_claims_triangle[triangle_indexer, development_period_index:] + np.full((max_months_for_dev_period_array - development_period_index), older_and_longer_tailed_claims.iloc[transaction,incurred_inc_col_num])
+            latest_development_period_index_for_each_past_claim[triangle_indexer] = development_period_index
+
+        if current_old_claim_number not in list_of_seen_claims:
+            list_of_seen_claims.append(current_old_claim_number)
+
+        previous_claim_number = current_old_claim_number
+
+    return(individual_claims_triangle, latest_development_period_index_for_each_past_claim)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Determining the features used to calculate the similarity (Euclidean distance) between claims
+def GetFeaturesForCalculatingEuclideanDistance(dat):
+    # Reporting delay
+    dat["OriginToReportDays"] = (dat["report_date"] - dat["origin_date"]).dt.days
+
+    # Case estimates
+    dat["index"] = pd.RangeIndex(len(dat.index))
+    indices = dat.groupby("claim_no")["index"].min().to_list()
+    indices = sorted(indices)
+    unique_claim_dat = dat.iloc[indices,]
+    unique_claim_dat["CaseEstimates"] = unique_claim_dat["incurred_inc"]
+
+    # One-hot encoding of the categorical variables
+    # Class
+    dummies_class = pd.get_dummies(unique_claim_dat.Class, dtype = int)
+    # Region
+    dummies_region = pd.get_dummies(unique_claim_dat.Region, dtype = int)
+    # Type
+    dummies_type = pd.get_dummies(unique_claim_dat.Type, dtype = int)
+    
+    features_dat = unique_claim_dat[["claim_no", "OriginToReportDays", "CaseEstimates"]]
+    features_dat = pd.concat([features_dat,dummies_class, dummies_region, dummies_type],axis=1)
+
+    transaction_months = unique_claim_dat["TransactionMonth"]
+
+    return(features_dat, transaction_months)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Applying the weights to the cumulative claims rectangle
+def GetWeightsForSimilarity(open_claim_features, open_claim_trans_month, feature_dat, transaction_months):
+
+    open_claim_feature_dat = open_claim_features
+    open_claim_transaction_month = open_claim_trans_month
+
+    num_features = len(feature_dat.columns)
+
+    # Determine the Euclidean distance for all features except month
+    # Setting up an empty matrix to store the output of the for loop
+    claims_features = np.zeros((len(feature_dat), num_features))
+
+    # Determining the Euclidean distance between each claim for the numerical feature
+    for closed_claim in range(len(feature_dat)): 
+        claims_features[closed_claim, : ] = (open_claim_feature_dat.iloc[range(len(feature_dat.columns))] - feature_dat.iloc[closed_claim, range(len(feature_dat.columns))])**2
+
+    # Determine the distance for the month of transaction
+    #Setting up an empty matrix to store the output of the for loops
+    months_dist = np.zeros((len(transaction_months), 1))
+
+    # Determining the distance measure for the month of transaction
+    for closed_claim in range(len(transaction_months)): 
+        months_dist[closed_claim] = min(abs(open_claim_transaction_month - transaction_months[closed_claim]), 12 - abs(open_claim_transaction_month - transaction_months[closed_claim]))
+
+
+    claims_features = np.dstack([claims_features, months_dist])
+
+    # Function for the weighted Euclidean distance
+    def weightedSum(claim):
+        weights = np.array([1,1,1,1,1,1,1,1,1,1,1])
+        dist = (sum(claim * weights))**(1/2)
+        return(dist)
+
+    # Creating a numpy array to store the euclidean distance in 
+    euclidean_dist = np.zeros((len(feature_dat)))
+
+    # Finding the Euclidean distance with all features
+    for claim1 in range(len(feature_dat)):
+        euclidean_dist[claim1] = np.apply_along_axis(weightedSum, axis = 1, arr = claims_features[claim1,:])
+
+    euclidean_dist = euclidean_dist.astype(np.float64)
+    weights = np.reciprocal(euclidean_dist)
+    scale_factor = sum(weights)
+    weights = weights * 1/scale_factor
+
+    return(weights)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Determing the link ratio for an open claim
+def GetTheLinkRatiosForAnOpenClaim(open_claim, older_longer_claims_with_DP, cum_claims_rectangle, latest_dpi_of_transaction_for_each_old_claim, weights):
+
+    unique_older_longer_claims = older_longer_claims_with_DP.claim_no.unique()
+
+    # development period of the open claim at the valuation date
+    dev_period_at_valuation_date_for_open_claim = (val_date.year - open_claim["OriginYear"]) * 12 + val_date.month - open_claim["OriginMonth"] + 1
+    # Python indexes from 0
+    dev_period_index_at_valuation_date_for_open_claim = dev_period_at_valuation_date_for_open_claim - 1 
+
+    print(dev_period_index_at_valuation_date_for_open_claim)
+
+    # Created to store the weighted cumulative claims rectangle, where the weights are calculated in the GetWeightsForSimilarity function
+    weighted_cum_claims_rectangle = np.zeros((len(cum_claims_rectangle), len(cum_claims_rectangle[0])))
+
+    # Obtaining the weighted cumulative claims rectangles
+    for claim in range(len(unique_older_longer_claims)):
+        weighted_cum_claims_rectangle = cum_claims_rectangle.iloc[claim,:] * weights[claim]
+
+    # list to store the individual claims triangle as the elements will be of differing lengths
+    individual_claims_triangle = []   
+
+    # Obtaining the individual cumulative claims "triangle"
+    for claim in range(len(unique_older_longer_claims)):
+        
+        # selects development periods from the development period the open claim has developed up to 
+        # selects development periods up to the last development period in which there was a transaction for each claim
+        temp = weighted_cum_claims_rectangle[claim,  dev_period_index_at_valuation_date_for_open_claim:latest_dpi_of_transaction_for_each_old_claim[claim]]
+        individual_claims_triangle.append(temp)
+
+    # This is how many development factors we are going to need to generate
+    projection_period = max(latest_dpi_of_transaction_for_each_old_claim) - dev_period_index_at_valuation_date_for_open_claim
+
+    link_ratios = np.zeros((projection_period, 1))
+
+    # Subsetting the individual claims triangle to only claims that are of a certain length 
+    # dpi iterates over 1:projection period to obtain the link ratio for each development period
+    for dpi in range(projection_period): 
+
+        # Subset to obtain the claims that are relevant to each development period 
+        small = [x for x in individual_claims_triangle if (len(x) if type(x) != int else 1) > (dpi + 1)]
+
+        # Select the correct column to add
+        first_col = [i[dpi] for i in small]
+        second_col = [i[dpi+1] for i in small]
+
+        # Sum the values in each development period
+        # d is for the denominator of the link ratio
+        # n is for the numerator of the link ratio
+        d = sum(first_col)
+        n = sum(second_col)
+
+        # Calculating the link ratio
+        link_ratios[dpi] = n/d
+        
+    return(link_ratios)
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Getting the cumulative development pattern of the transactions of the open claims up to the valuation date so that we can apply the link ratios to them
+
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Applying the new model 
+#def ApplyIndividualClaimsReservingModel(val_dat):
+
+    # Find the time a claim has been open and add to the valuation data frame
+    time_open = GetTimeClaimHasBeenOpen(val_dat)
+
+    # This is a list of all the open claim numbers - type of object is np.ndarray
+    list_of_open_claim_numbers = GetListOfOpenClaimsAtValuationDate(val_dat)[0]
+
+    # This is a dataframe containing all the transactions of all the open claims
+    open_claims_transactions_dataframe = GetListOfOpenClaimsAtValuationDate(val_dat)[1]
+
+    # This is a dataframe containing each open claim number once - i.e., only the first transaction for each claim number is included 
+    unique_open_claims_dat = GetListOfOpenClaimsAtValuationDate(val_dat)[2]
+
+    # This is a tuple of size two 
+    # [0] - the features calculated using Euclidean distance
+    # [1] - the month of the transaction for the alternative distance measure 
+    open_claims_dat_feature_dat = GetFeaturesForCalculatingEuclideanDistance(open_claims_transactions_dataframe)
+
+    # Applying the new model to each of the open claims at the valuation date 
+    for claim in len(list_of_open_claim_numbers):
+
+        # Find all the transactions of all the older and longer tail claims for the current claim iteration 
+        older_and_longer_tail_claims_transactions = GetOlderandLongerTailClaims(unique_open_claims_dat.iloc[claim,], val_dat)
+
+        # This is a tuple of size two 
+        # [0] - the features calculated using Euclidean distance
+        # [1] - the month of the transaction for the alternative distance measure
+        older_and_longer_tail_claims_with_features = GetFeaturesForCalculatingEuclideanDistance(older_and_longer_tail_claims_transactions)
+
+        # These are the weights that are used to apply to the cumulative individual claims rectangles
+        weights = GetWeightsForSimilarity(open_claims_dat_feature_dat[0][claim,], open_claims_dat_feature_dat[1][claim], older_and_longer_tail_claims_with_features[0], older_and_longer_tail_claims_with_features[1])
+
+        # Get the development period for each transaction of the older and longer claims
+        # This is used to determine the individual claims rectangles
+        # Consider putting this inside the 
+        older_and_longer_tail_claims_with_development_period = GetDevelopmentPeriodForOlderAndLongerTailClaimTransactions(older_and_longer_tail_claims_transactions)
+
+        # This is a 2 element tuple
+        # [0] = the cumulative individual claims rectangle
+        # [1] = the development period index for the last transaction for each claim number 
+        individual_claims_rectangle = GetCumulativeIndividualClaimsRectangle(older_and_longer_tail_claims_with_development_period)
+
+        # Finding the link ratios to apply to the open claim to determine its predicted development pattern
+        link_ratios = GetTheLinkRatiosForAnOpenClaim("???", older_and_longer_tail_claims_with_development_period, individual_claims_rectangle[0], individual_claims_rectangle[1], weights)
+
+        # Apply the link ratios to the open claim to project it         
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+'''
+# Applying the basic chain ladder 
+def ApplyBasicChainLadder(val_dat):
+
+    # Setting up the claims triangle at the valution date
+    val_triangle = cl.Triangle(
+        val_dat,
+        origin = ["OriginYear", "OriginMonth"],
+        origin_format = "%d-%m-%Y",    
+        development = ["TransactionYear", "TransactionMonth"],
+        development_format = "%d-%m-%Y",
+        columns = "incurred_inc",
+        cumulative = False
+    )
+
+    # Changes the triangle from incremental to cumulative 
+    val_triangle = val_triangle.incr_to_cum()
+
+    # The full triangle after applying the chain ladder
+    val_triangle_model = cl.Chainladder().fit(val_triangle)
+
+    # Converting to a data frame structure
+    full_triangle_df = val_triangle_model.full_triangle_.to_frame()
+
+    # The predicted ultimate values for each origin year 
+    predicted_ultimate = val_triangle_model.ultimate_
+    predicted_ultimate = predicted_ultimate.to_frame()
+    predicted_ultimate = predicted_ultimate.rename(columns={'2261-12': 'Predicted'})
+    #print("These are the predicted ultimate values:","\n", predicted_ultimate)
+
+    return()
+
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Comparing the chain ladder against the observed data    
+    # Finding the observed ultimate corresponding to the same period as the predicted ultimate
+    # Converting the data to triangle format - all the data is used
+    initial = cl.Triangle(
+        dat, 
+        origin = ["OriginYear", "OriginMonth"],
+        origin_format = "%d-%m-%Y",    
+        development = ["TransactionYear", "TransactionMonth"],
+        development_format = "%d-%m-%Y",
+        columns = "incurred_inc",
+        cumulative = False
+    )
+
+    # Converting the triangle from incremental to cumulative
+    initial = initial.incr_to_cum()
+    #print("This is the full period, cumulative traingle: ", initial)
+
+    # Finding the link ratios
+    #print(initial.link_ratio)
+
+    # Check: the valuation date
+    #print("This is the valuation date for the full period:", initial.valuation_date)
+
+    initial_triangle_dat = initial.to_frame()
+    observed_ultimate = initial_triangle_dat.iloc[0:((val_year - start_year + 1)*12), (val_year - start_year)*12] 
+
+    # Combining the predicted and observed ultimate values into a single dataframe
+    predicted_ultimate["Observed"] = observed_ultimate
+    ultimate = predicted_ultimate
+    #print("Data frame of the predicted and observed ultimate:","\n", ultimate)
+
+    # Ratio of predicted ultimate to observed ultimate 
+    print("Predicted:Observed ultimate:","\n", (ultimate["Predicted"]/ultimate["Observed"]))
+'''
+#---------------------------------------------------------------------------------------------------------------------------------------
+# MAIN
+# Reading in the data
+dat = pd.read_csv("Transactions_Data.csv")
+
+# Format the data
+dat = FormatTheData(dat)
+#print(dat.iloc[0,])
+
+# Finding the start origin year 
+start_year = min(dat["origin_date"]).year
+
+# Setting the valuation date 
+val_year = 2014
+val_month = 12
+val_day = 31
+val_date = date.datetime(val_year, val_month, val_day)
+
+# Subset the data to the valuation date
+valuation_dat = SubsetToValuationDate(dat)
+
+test = GetTimeClaimHasBeenOpen(valuation_dat)
+
+# Apply the Individual Claims Reserving Model at the valuation date
+#IndividualClaimsReservingModelResults = ApplyIndividualClaimsReservingModel(valuation_dat)
+
+# Apply the basic chain ladder model at the valuation date
+#BasicChainLadderResults = ApplyBasicChainLadder(valuation_dat)
+
+# Compare the results of the basic chain ladder model and the individual claims reserving model at the valuation date
+
+#time_open = GetTimeClaimHasBeenOpen(valuation_dat)
+#unique_open_claims_dat = GetListOfOpenClaimsAtValuationDate(valuation_dat)[2]
+#older_and_longer_tail_claims_transactions = GetOlderandLongerTailClaims(unique_open_claims_dat.iloc[1,], valuation_dat)
+#older_and_longer_tail_claims_with_development_period = GetDevelopmentPeriodForOlderAndLongerTailClaimTransactions(older_and_longer_tail_claims_transactions)
+#individual_claims_rectangle = GetCumulativeIndividualClaimsRectangle(older_and_longer_tail_claims_with_development_period)
+#print(individual_claims_rectangle)
+
+# Measuring the time the program has taken
+print("--- %s seconds ---" % (time.time() - start_time))
